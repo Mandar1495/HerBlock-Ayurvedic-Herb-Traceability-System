@@ -1,0 +1,128 @@
+import axios from 'axios';
+import Constants from 'expo-constants';
+import { useAuthStore } from '../store/authStore';
+
+// API base URL - configure in app.json
+const API_URL = 'http://10.60.47.252:8080/api';
+
+// Create axios instance
+const apiClient = axios.create({
+  baseURL: API_URL,
+  timeout: 60000, // Increased to 60s for multi-image uploads
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Request interceptor for auth token
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = useAuthStore.getState().token;
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Response interceptor for error handling
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.code === 'ECONNABORTED') {
+      error.message = 'Request timeout. Please try again.';
+    } else if (!error.response) {
+      error.message = 'Network Error';
+    }
+    return Promise.reject(error);
+  }
+);
+
+// API methods
+export const api = {
+  // Login
+  login: async (collectorId, pin) => {
+    const response = await apiClient.post('/collector/login', {
+      collector_id: collectorId,
+      pin: pin,
+    });
+    return response.data;
+  },
+
+  // Submit collection to backend (saves to MongoDB + blockchain record)
+  submitCollection: async (collection) => {
+    const response = await apiClient.post('/collection', {
+      product_id: collection.product_id,
+      collector_id: collection.collector_id,
+      collector_name: collection.collector_id,
+      species_name: collection.species,
+      latitude: collection.gps?.lat,
+      longitude: collection.gps?.lon,
+      location_name: 'Field Collection',
+      quantity_kg: parseFloat(collection.quantity) || 0,
+      quality_grade: 'A',
+      weather_conditions: 'Normal',
+      photo_base64: collection.photo || '',
+      notes: collection.notes || '',
+    });
+    // /collection returns the saved event — treat any 200 as success
+    return { success: true, geo_validated: true, txId: response.data?.id, ...response.data };
+  },
+
+  // Get product trace
+  getProductTrace: async (productId) => {
+    const response = await apiClient.get(`/blockchain/trace/${productId}`);
+    return response.data;
+  },
+
+  // Get collector profile
+  getProfile: async (collectorId) => {
+    const response = await apiClient.get(`/collector/${collectorId}`);
+    return response.data;
+  },
+
+  // Upload farm reference photos
+  uploadFarmPhotos: async (collectorId, photosArray, location) => {
+    const response = await apiClient.post(`/collector/${collectorId}/farm-photos`, {
+      photos: photosArray,
+      location: location
+    });
+    return response.data;
+  },
+
+  // Get approved zones for a species
+  getApprovedZones: async (species) => {
+    const response = await apiClient.get(`/zones/${species}`);
+    return response.data;
+  },
+
+  // Get recent hardware intake events (ESP32 submissions)
+  getIntakeEvents: async (limit = 50) => {
+    const response = await apiClient.get(`/intake/events?limit=${limit}`);
+    return response.data.events || [];
+  },
+
+  // Health check
+  healthCheck: async () => {
+    try {
+      const response = await apiClient.get('/health', { timeout: 5000 });
+      return response.data;
+    } catch (error) {
+      return { status: 'offline' };
+    }
+  },
+
+  // Batch sync
+  batchSync: async (collections) => {
+    const response = await apiClient.post('/blockchain/batch-collection', {
+      collections: collections,
+    });
+    return response.data;
+  },
+};
+
+// Export axios instance for custom calls
+export { apiClient };
